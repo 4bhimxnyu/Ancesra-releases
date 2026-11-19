@@ -1,0 +1,56 @@
+# Makes a draft release public at a set time.
+#
+# The installer is uploaded beforehand as a draft (scripts/release.ps1 -Draft in
+# the app's repo). A draft is hidden: the website and installed copies of
+# Ancesra don't see it. This job publishes it, and then they do.
+#
+# Set for: Ancesra AI 2.8.0 at 00:00 on 20 Nov 2026, India time (18:30 UTC on 19 Nov).
+#
+# GitHub starts scheduled jobs late, sometimes by many minutes, and at busy
+# times skips one. So the job is asked for several times after the hour, never
+# at :00 or :30, and it does nothing if the release is already public or if it
+# is started before the set time.
+name: Publish the draft release
+
+on:
+  schedule:
+    - cron: "33,38,43,48,53,58 18 19 11 *"
+    - cron: "3,13,23,43 19 19 11 *"
+    - cron: "13 20,22 19 11 *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-draft
+  cancel-in-progress: false
+
+env:
+  RELEASE_NAME: "Ancesra AI 2.8.0"
+  NOT_BEFORE: "2026-11-19T18:30:00Z"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the draft, once the time has come
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(date -u +%s)" -lt "$(date -u -d "$NOT_BEFORE" +%s)" ]; then
+            echo "It is $(date -u +%FT%TZ). Not before $NOT_BEFORE: nothing done."
+            exit 0
+          fi
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" \
+            --jq "[.[] | select(.draft and .name == \"$RELEASE_NAME\")][0].id // empty")
+          if [ -z "$id" ]; then
+            echo "No draft named '$RELEASE_NAME': it is already public, or was never uploaded."
+            exit 0
+          fi
+          assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/$id" --jq '[.assets[] | select(.state == "uploaded" and (.name | endswith(".exe")))] | length')
+          if [ "$assets" -lt 1 ]; then
+            echo "The draft has no finished installer upload. Not published."
+            exit 1
+          fi
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -F draft=false -f make_latest=true --jq '"Published: " + .html_url'
